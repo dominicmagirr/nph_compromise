@@ -1,0 +1,172 @@
+---
+title: "Reproduce p-values in letter"
+author: "Dominic Magirr"
+date: "5/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Figure 1 (A)
+
+### Data
+
+The data in Figure 1 (A) were extracted manually from 
+
+Mok, Tony SK, et al. "Pembrolizumab versus chemotherapy for previously untreated, PD-L1-expressing, locally advanced or metastatic non-small-cell lung cancer (KEYNOTE-042): a randomised, open-label, controlled, phase 3 trial." The Lancet 393.10183 (2019): 1819-1830.
+
+using the same techniques as described in Friedlin \& Korn.
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(survival)
+#########################
+## start here
+df_mok <- rbind(read.csv("mok_3c_control_ipd.csv")[,-1],
+                read.csv("mok_3c_pembro_ipd.csv")[,-1])
+head(df_mok)
+```
+
+### KM plot
+
+```{r}
+df_mok$trt <- ifelse(df_mok$arm == 1, "Pembrolizumab", "Chemotherapy")
+KM.est<-survfit(Surv(time,event)~arm, data=df_mok, type="kaplan-meier")
+p1 <- survminer::ggsurvplot(KM.est, 
+                            data = df_mok, 
+                            risk.table = TRUE, 
+                            break.x.by = 6,
+                            legend.labs = c("control", "test"),
+                            legend.title = "",
+                            xlab = "Time (months)",
+                            ylab = "Progression-free survival",
+                            risk.table.fontsize = 4,
+                            title = "                        (A)",
+                            legend = c(0.8,0.8))
+
+p1
+```
+
+### P-values
+
+
+```{r}
+### get survival probabilities for the pooled data
+s_pool <- summary(survfit(Surv(time,event)~1, data= df_mok))$surv
+
+### standard log-rank test weights
+w_lr <- rep(1, length(s_pool))
+
+### Fleming-Harrington (0,1) test weights
+w_fh <- 1 - c(1, s_pool[-length(s_pool)])
+
+### modest weights
+w_mw <- pmin(1 / c(1, s_pool[-length(s_pool)]), 2)
+
+### produce risk table
+rt_row <- function(t_star, df){
+  
+  df1 = df[df$arm == unique(df$arm)[1],]
+  df2 = df[df$arm == unique(df$arm)[2],]
+  data.frame(time = t_star,
+             r1 = sum(df1$time >= t_star),
+             r2 = sum(df2$time >= t_star),
+             e1 = sum(df1$time == t_star & df1$event == 1),
+             e2 = sum(df2$time == t_star & df2$event == 1))
+}
+
+rt <- purrr::map_df(unique(df_mok$time), 
+                    rt_row, 
+                    df = df_mok) %>% 
+  arrange(time) %>% 
+  filter(e1 > 0 | e2 > 0)
+
+### produce p-values
+p_wlrt <- function(rt, w){
+  
+  u = sum(w * (rt$e2 - (rt$e1+rt$e2) * rt$r2 / (rt$r1+rt$r2)))
+  v_u = sum(w^2 * rt$r1 * rt$r2 * (rt$e1+rt$e2) * (rt$r1+rt$r2 - (rt$e1+rt$e2)) / ((rt$r1+rt$r2)^2 * (rt$r1+rt$r2-1)), na.rm = TRUE)
+  
+  
+  z = u / sqrt(v_u)
+  pnorm(z)
+}
+
+
+p_wlrt(rt, w = w_lr)
+p_wlrt(rt, w = w_fh)
+p_wlrt(rt, w = w_mw)
+
+```
+
+## Figure 1 (B)
+
+### Data
+
+The data in Figure 1 B were generated using the prescription in Friedlin \& Korn:
+
+```{r}
+set.seed(102)
+t_c <- rexp(n = 1000, rate = 0.25)
+
+t_e_1 <- rexp(n = 1000, rate = 4)
+t_e_2 <- rexp(n = 1000, rate = 0.19)
+t_e <- ifelse(t_e_1 < 0.1, t_e_1, 0.1 + t_e_2)
+
+event_c = t_c < 5
+event_e = t_e < 5
+time_c = pmin(t_c, 5)
+time_e = pmin(t_e, 5)
+
+
+df_B <- data.frame(time = c(time_c, time_e),
+                   event = c(event_c, event_e),
+                   arm = rep(c("C", "E"), c(1000, 1000)))
+```
+
+
+### KM plot
+
+```{r}
+fit_B <- survfit(Surv(time, event)~arm, data = df_B)
+
+p2 <- survminer::ggsurvplot(fit_B, 
+                            data = df_B, 
+                            risk.table = TRUE, 
+                            break.x.by = 1,
+                            legend.labs = c("control", "test"),
+                            legend.title = "",
+                            ylab = "Overall survival",
+                            xlab = "Time (years)",
+                            risk.table.fontsize = 4,
+                            title = "                        (B)",
+                            legend = c(0.8,0.8))
+
+p2
+
+#survminer::arrange_ggsurvplots(list(p1, p2))
+```
+
+
+
+### P-values
+
+
+
+```{r}
+s_pool <- summary(survfit(Surv(time,event)~1, data= df_B))$surv
+w_lr <- rep(1, length(s_pool))
+w_fh <- 1 - c(1, s_pool[-length(s_pool)])
+w_mw <- pmin(1 / c(1, s_pool[-length(s_pool)]), 2)
+rt <- purrr::map_df(unique(df_B$time), 
+                    rt_row, 
+                    df = df_B) %>% 
+  arrange(time) %>% 
+  filter(e1 > 0 | e2 > 0)
+p_wlrt(rt, w = w_lr)
+p_wlrt(rt, w = w_fh)
+p_wlrt(rt, w = w_mw)
+```
+
